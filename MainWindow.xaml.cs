@@ -1,16 +1,10 @@
-﻿using System;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
+﻿using System.IO;
 using System.Net.Http;
-using System.Text.Json;
-using System.Threading.Tasks;
-using System.Windows;
-using Microsoft.Win32;
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Windows;
 using System.Windows.Controls;
-
+using System.Management;
 
 namespace SampleGroundForTheDay
 {
@@ -22,7 +16,10 @@ namespace SampleGroundForTheDay
         private readonly HttpClient _httpClient = new HttpClient();
         private Button ScanButton;
         private ProgressBar ProgressBar;
-        private RichTextBox StatusTextBlock; // Reference the RichTextBox control
+        private TextBox StatusTextBlock; // Reference the RichTextBox control
+
+
+        private ManagementEventWatcher watcher;
         public MainWindow()
         {
             InitializeComponent();
@@ -33,6 +30,52 @@ namespace SampleGroundForTheDay
             ClearLogButton = FindName("ClearLogButton") as Button;
 
             ClearLogButton.IsEnabled = false; // Initially disable clear button
+
+            LogConnectedRemovableDrives();
+
+            watcher = new ManagementEventWatcher();
+            watcher.Query = new WqlEventQuery("SELECT * FROM Win32_VolumeChangeEvent WHERE EventType = 2 OR EventType = 3");
+            watcher.EventArrived += (sender, e) =>
+            {
+                int eventType = Convert.ToInt32(e.NewEvent.GetPropertyValue("EventType"));
+                string driveName = e.NewEvent.GetPropertyValue("DriveName").ToString();
+
+                if (eventType == 2) // Drive inserted
+                {
+                    LogTextBox.Dispatcher.Invoke(() =>
+                    {
+                        LogTextBox.AppendText($"Drive detected: {driveName}\n");
+                    });
+                }
+                else if (eventType == 3) // Drive removed
+                {
+                    LogTextBox.Dispatcher.Invoke(() =>
+                    {
+                        LogTextBox.AppendText($"Drive removed: {driveName}\n");
+                    });
+                }
+            };
+            watcher.Start();
+
+            Closed += MainWindow_Closed;
+        }
+
+        private void LogConnectedRemovableDrives()
+        {
+            var drives = DriveInfo.GetDrives().Where(drive => drive.DriveType == DriveType.Removable);
+            foreach (var drive in drives)
+            {
+                string driveInfo = $"Drive detected: {drive.Name}\n";
+                LogTextBox.AppendText($"{driveInfo}\n");
+            }
+        }
+        private void MainWindow_Closed(object sender, EventArgs e)
+        {
+            if (watcher != null)
+            {
+                watcher.Stop();
+                watcher.Dispose();
+            }
         }
         private async void Button_Click(object sender, RoutedEventArgs e)
         {
@@ -46,7 +89,7 @@ namespace SampleGroundForTheDay
 
                 ClearLog(); // Clear log before scanning
 
-                StatusTextBox.Text = "Scanning flash drives...";
+                StatusTextBox.Text = "Scanning flash drive...";
                 ProgressBar.Visibility = Visibility.Visible;
 
                 int totalFilesScanned = 0;
@@ -59,22 +102,16 @@ namespace SampleGroundForTheDay
                     foreach (var file in files)
                     {
                         totalFilesScanned++;
-                        StatusTextBox.Text = $"Scanning files: {totalFilesScanned} total";
 
                         string fileHash = GetFileHash(file);
-                        bool isSuspicious = await CheckFileHash(apiKey, fileHash);
+                        bool isSuspicious = await CheckFileHash(apiKey, fileHash, file); // Pass the file path here
 
                         LogTextBox.AppendText($"{file}: {(isSuspicious ? "Suspicious" : "Clean")}\n");
-
-                        if (isSuspicious)
-                        {
-                            StatusTextBox.Text += $"[Warning] Suspicious file found: {file}\n";
-                        }
                     }
                 }
 
                 ProgressBar.Visibility = Visibility.Collapsed;
-                StatusTextBox.Text = "Scan complete.";
+                StatusTextBox.Text = $"Scan complete. Scanned {totalFilesScanned} files.";
 
                 // Enable clear button only if there are log entries
                 ClearLogButton.IsEnabled = LogTextBox.Text.Length > 0;
@@ -85,6 +122,8 @@ namespace SampleGroundForTheDay
                 MessageBox.Show($"Error occurred during scan: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
+
         private void ClearLogButton_Click(object sender, RoutedEventArgs e)
         {
             ClearLog();
@@ -106,8 +145,22 @@ namespace SampleGroundForTheDay
             }
         }
 
-        private async Task<bool> CheckFileHash(string apiKey, string fileHash)
+        private async Task<bool> CheckFileHash(string apiKey, string fileHash, string filePath)
         {
+            if (Path.GetExtension(filePath).Equals(".bat", StringComparison.OrdinalIgnoreCase))
+            {
+                // Mark .bat files as suspicious without checking with VirusTotal
+                if (PromptDelete(filePath))
+                {
+                    DeleteFile(filePath);
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
             string url = $"https://www.virustotal.com/api/v3/files/{fileHash}";
 
             using (var request = new HttpRequestMessage(HttpMethod.Get, url))
@@ -124,13 +177,47 @@ namespace SampleGroundForTheDay
                         if (data.ContainsKey("positives"))
                         {
                             int positives = Convert.ToInt32(data["positives"]);
-                            return positives > 0;
+                            if (positives > 0)
+                            {
+                                if (PromptDelete(filePath))
+                                {
+                                    DeleteFile(filePath);
+                                    return true;
+                                }
+                                else
+                                {
+                                    return false;
+                                }
+                            }
                         }
                     }
                 }
             }
 
             return false;
+        }
+        private bool PromptDelete(string filePath)
+        {
+            var result = MessageBox.Show($"A suspicious file was detected: {filePath}\nDo you want to delete it?", "Suspicious File Detected", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            return result == MessageBoxResult.Yes;
+        }
+        private void DeleteFile(string filePath)
+        {
+            try
+            {
+                File.Delete(filePath);
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Deleted suspicious file: {filePath}\n");
+                });
+            }
+            catch (Exception ex)
+            {
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Error deleting file {filePath}: {ex.Message}\n");
+                });
+            }
         }
     }
 }
