@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Management;
 
 namespace SampleGroundForTheDay
@@ -18,11 +20,25 @@ namespace SampleGroundForTheDay
         private ProgressBar ProgressBar;
         private TextBox StatusTextBlock; // Reference the RichTextBox control
 
+        private readonly string quarantineFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Quarantine");
+
+        private string quarantineFolderPath = @"C:\Quarantine"; // Specify the path to the quarantine folder
 
         private ManagementEventWatcher watcher;
+
+
+
         public MainWindow()
         {
             InitializeComponent();
+
+            KeepButton.Click += KeepButton_Click;
+            HardResetButton.Click += HardResetButton_Click;
+
+            LogQuarantinedFiles();
+
+
+
             ScanButton = FindName("ScanButtonn") as Button;
             ProgressBar = FindName("ProgressBarr") as ProgressBar;
             StatusTextBox = FindName("StatusTextBox") as TextBox;
@@ -77,6 +93,23 @@ namespace SampleGroundForTheDay
                 watcher.Dispose();
             }
         }
+        private void EnsureQuarantineFolderExists()
+        {
+            if (!Directory.Exists(quarantineFolderPath))
+            {
+                Directory.CreateDirectory(quarantineFolderPath);
+
+                // Make the folder hidden
+                File.SetAttributes(quarantineFolderPath, File.GetAttributes(quarantineFolderPath) | FileAttributes.Hidden);
+
+                // Remove read and execute permissions
+                DirectoryInfo directoryInfo = new DirectoryInfo(quarantineFolderPath);
+                DirectorySecurity directorySecurity = directoryInfo.GetAccessControl();
+                directorySecurity.AddAccessRule(new FileSystemAccessRule(Environment.UserName, FileSystemRights.ReadAndExecute, AccessControlType.Deny));
+                directoryInfo.SetAccessControl(directorySecurity);
+            }
+        }
+
         private async void Button_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -93,6 +126,7 @@ namespace SampleGroundForTheDay
                 ProgressBar.Visibility = Visibility.Visible;
 
                 int totalFilesScanned = 0;
+                int totalFiles = drives.Sum(drive => Directory.GetFiles(drive.Name, "*.*", SearchOption.AllDirectories).Length);
 
                 foreach (var drive in drives)
                 {
@@ -107,6 +141,10 @@ namespace SampleGroundForTheDay
                         bool isSuspicious = await CheckFileHash(apiKey, fileHash, file); // Pass the file path here
 
                         LogTextBox.AppendText($"{file}: {(isSuspicious ? "Suspicious" : "Clean")}\n");
+
+                        // Update progress bar
+                        double progress = (double)totalFilesScanned / totalFiles * 100;
+                        ProgressBar.Value = progress;
                     }
                 }
 
@@ -122,6 +160,7 @@ namespace SampleGroundForTheDay
                 MessageBox.Show($"Error occurred during scan: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
 
 
         private void ClearLogButton_Click(object sender, RoutedEventArgs e)
@@ -150,15 +189,8 @@ namespace SampleGroundForTheDay
             if (Path.GetExtension(filePath).Equals(".bat", StringComparison.OrdinalIgnoreCase))
             {
                 // Mark .bat files as suspicious without checking with VirusTotal
-                if (PromptDelete(filePath))
-                {
-                    DeleteFile(filePath);
-                    return true;
-                }
-                else
-                {
-                    return false;
-                }
+                QuarantineFile(filePath);
+                return true;
             }
 
             string url = $"https://www.virustotal.com/api/v3/files/{fileHash}";
@@ -179,15 +211,8 @@ namespace SampleGroundForTheDay
                             int positives = Convert.ToInt32(data["positives"]);
                             if (positives > 0)
                             {
-                                if (PromptDelete(filePath))
-                                {
-                                    DeleteFile(filePath);
-                                    return true;
-                                }
-                                else
-                                {
-                                    return false;
-                                }
+                                QuarantineFile(filePath);
+                                return true;
                             }
                         }
                     }
@@ -196,6 +221,41 @@ namespace SampleGroundForTheDay
 
             return false;
         }
+        private void QuarantineFile(string filePath)
+        {
+            string quarantineFilePath = Path.Combine(quarantineFolder, Path.GetFileName(filePath));
+
+            try
+            {
+                if (!Directory.Exists(quarantineFolder))
+                {
+                    Directory.CreateDirectory(quarantineFolder);
+                }
+
+                File.Move(filePath, quarantineFilePath);
+
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Quarantined suspicious file: {filePath}\n");
+                });
+
+                // Append quarantined file information to QuarantineTextBox
+                QuarantineTextBox.Dispatcher.Invoke(() =>
+                {
+                    QuarantineTextBox.AppendText($"Quarantined: {quarantineFilePath}\n");
+                });
+            }
+            catch (Exception ex)
+            {
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Error quarantining file {filePath}: {ex.Message}\n");
+                });
+            }
+        }
+
+
+
         private bool PromptDelete(string filePath)
         {
             var result = MessageBox.Show($"A suspicious file was detected: {filePath}\nDo you want to delete it?", "Suspicious File Detected", MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -210,6 +270,9 @@ namespace SampleGroundForTheDay
                 {
                     LogTextBox.AppendText($"Deleted suspicious file: {filePath}\n");
                 });
+
+                // Show a message box indicating that the file has been deleted
+                MessageBox.Show($"Deleted suspicious file: {filePath}", "File Deleted", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -219,5 +282,160 @@ namespace SampleGroundForTheDay
                 });
             }
         }
+
+
+        private void CleanButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (MessageBox.Show("Are you sure you want to clean all quarantined files?", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+            {
+                string[] quarantinedFiles = QuarantineTextBox.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                foreach (string quarantinedFile in quarantinedFiles)
+                {
+                    string filePath = quarantinedFile.Substring("Quarantined: ".Length).Trim(); // Trim to remove leading and trailing whitespaces
+                    DeleteFile(filePath);
+                }
+                QuarantineTextBox.Clear(); // Clear all entries from QuarantineTextBox
+            }
+        }
+
+        public void LogQuarantinedFiles()
+        {
+            if (Directory.Exists(quarantineFolder))
+            {
+                var files = Directory.GetFiles(quarantineFolder);
+                foreach (var file in files)
+                {
+                    QuarantineTextBox.AppendText($"Quarantined: {file}\n");
+                }
+            }
+        }
+        private void KeepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (MessageBox.Show("Are you sure you want to keep all quarantined files for 7 days?", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+            {
+                string[] quarantinedFiles = QuarantineTextBox.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                foreach (string quarantinedFile in quarantinedFiles)
+                {
+                    string filePath = quarantinedFile.Substring("Quarantined: ".Length).Trim(); // Trim to remove leading and trailing whitespaces
+                    KeepFileFor7Days(filePath);
+                }
+                QuarantineTextBox.Clear(); // Clear all entries from QuarantineTextBox
+            }
+        }
+        private async void KeepFileFor7Days(string filePath)
+        {
+            try
+            {
+                string quarantineFilePath = Path.Combine(quarantineFolder, Path.GetFileName(filePath));
+
+                // Move the file to the quarantine folder if it's not already there
+                if (!File.Exists(quarantineFilePath))
+                {
+                    File.Move(filePath, quarantineFilePath);
+                }
+
+                // Calculate the date 7 days from now
+                DateTime deletionDate = DateTime.Now.AddDays(7);
+
+                // Write the deletion date to a file in the quarantine folder
+                string deletionDateFilePath = Path.Combine(quarantineFolder, $"{Path.GetFileNameWithoutExtension(filePath)}.delete");
+                await File.WriteAllTextAsync(deletionDateFilePath, deletionDate.ToString());
+
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"File {Path.GetFileName(filePath)} will be deleted on {deletionDate}\n");
+                });
+            }
+            catch (Exception ex)
+            {
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Error keeping file {Path.GetFileName(filePath)}: {ex.Message}\n");
+                });
+            }
+        }
+        private void HardResetButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (MessageBox.Show("Are you sure you want to hard reset the flash drive? This will permanently delete all files on the flash drive.", "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+            {
+                string[] quarantinedFiles = QuarantineTextBox.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                foreach (string quarantinedFile in quarantinedFiles)
+                {
+                    string filePath = quarantinedFile.Substring("Quarantined: ".Length).Trim(); // Trim to remove leading and trailing whitespaces
+                    RestoreFileToFlashDrive(filePath);
+                }
+                QuarantineTextBox.Clear(); // Clear all entries from QuarantineTextBox
+
+                // Reformat the flash drive
+                ReformatFlashDrive();
+            }
+        }
+
+        private void RestoreFileToFlashDrive(string filePath)
+        {
+            try
+            {
+                string driveLetter = Path.GetPathRoot(filePath).Replace("\\", "");
+
+                string quarantineFilePath = Path.Combine(quarantineFolder, Path.GetFileName(filePath));
+
+                // Move the file back to the flash drive
+                File.Move(quarantineFilePath, filePath);
+
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Restored file {Path.GetFileName(filePath)} to flash drive {driveLetter}\n");
+                });
+            }
+            catch (Exception ex)
+            {
+                LogTextBox.Dispatcher.Invoke(() =>
+                {
+                    LogTextBox.AppendText($"Error restoring file {Path.GetFileName(filePath)}: {ex.Message}\n");
+                });
+            }
+        }
+        private void ReformatFlashDrive()
+        {
+            string[] drives = Directory.GetLogicalDrives();
+
+            foreach (string drive in drives)
+            {
+                DriveInfo driveInfo = new DriveInfo(drive);
+
+                if (driveInfo.DriveType == DriveType.Removable)
+                {
+                    try
+                    {
+                        using (var disk = new FileStream(drive, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                        {
+                            disk.SetLength(0);
+                        }
+
+                        LogTextBox.Dispatcher.Invoke(() =>
+                        {
+                            LogTextBox.AppendText($"Reformatted flash drive {drive}\n");
+                        });
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        LogTextBox.Dispatcher.Invoke(() =>
+                        {
+                            LogTextBox.AppendText($"Access denied. Run the application as administrator.\n");
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        LogTextBox.Dispatcher.Invoke(() =>
+                        {
+                            LogTextBox.AppendText($"Error reformatting flash drive {drive}: {ex.Message}\n");
+                        });
+                    }
+                }
+            }
+        }
+
+
+
     }
 }

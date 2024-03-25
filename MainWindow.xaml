@@ -12,12 +12,21 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="10">
+        <StackPanel HorizontalAlignment="Left" VerticalAlignment="Center" Margin="139,0,0,0">
             <Button Name="ScanButtonn" Content="Scan Flash Drive" Padding="10" Margin="10" Click="Button_Click"/>
             <ProgressBar Name="ProgressBarr" Visibility="Collapsed" Height="20" Margin="10"/>
             <Button Name="ClearLogButton" Content="Clear Log" Padding="5" Margin="5" Click="ClearLogButton_Click" IsEnabled="False"/>
         </StackPanel>
         <TextBox Name="StatusTextBox" Grid.Row="1" Margin="10" TextWrapping="Wrap" FontSize="14" IsReadOnly="True" HorizontalAlignment="Stretch"/>
-        <TextBox Name="LogTextBox" Grid.Row="2" Margin="10" IsReadOnly="True" TextWrapping="Wrap" FontSize="14" VerticalScrollBarVisibility="Auto" HorizontalAlignment="Stretch"/>
+        <TextBox Name="LogTextBox" Grid.Row="2" Margin="10,10,405,10" IsReadOnly="True" TextWrapping="Wrap" FontSize="14" VerticalScrollBarVisibility="Auto"/>
+
+        <TextBox x:Name="QuarantineTextBox" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Margin="409,10,10,10" Grid.Row="2"/>
+        <Button Content="Clean" Click="CleanButton_Click" Tag="file_path_here" Height="30" Width="150" Margin="460,10,190,56"/>
+        <Button x:Name="KeepButton" Content="Keep for 7 days" Click="KeepButton_Click" Height="30" Width="150" Margin="460,56,190,10"/>
+        <Button x:Name="HardResetButton" Content="Hard Reset Flash Drive" Click="HardResetButton_Click" Height="30" Width="150" Margin="628,43,22,23"/>
+
+
+
+
     </Grid>
 </Window>
